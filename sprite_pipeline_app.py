@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import threading
 import zipfile
@@ -101,6 +102,22 @@ CATEGORY_OPTIONS = [
     "Residential",
     "Maintenance",
     "Uncategorized",
+]
+
+THEME_OPTIONS = [
+    "Asian",
+    "Cyberpunk",
+    "European",
+    "Modern",
+    "Victorian",
+    "Industrial",
+    "Steampunk",
+    "Medieval/Fantasy",
+    "Sci-Fi",
+    "Nordic/Scandinavian",
+    "Mediterranean",
+    "Colonial/Main Street",
+    "Post-Apocalyptic",
 ]
 
 _CATEGORY_ALIAS_MAP = {
@@ -242,6 +259,7 @@ class PackMetadata:
     name: str = "New Model"
     set_id: str = ""
     category: str = DEFAULT_CATEGORY
+    theme: str = ""
     tiles_x: int = 2
     tiles_y: int = 2
     variant_group: str = ""
@@ -266,6 +284,7 @@ class PackMetadata:
             "name": self.name.strip() or "New Model",
             "set_id": self.set_id.strip(),
             "category": _normalize_category(self.category),
+            "theme": self.theme.strip(),
             "tiles_x": max(1, int(self.tiles_x)),
             "tiles_y": max(1, int(self.tiles_y)),
             "variant_group": self.variant_group.strip(),
@@ -283,8 +302,8 @@ class SpritePipelineApp(BaseTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Sprite Pipeline (Standalone)")
-        self.geometry("1500x900")
-        self.minsize(1200, 760)
+        self.geometry("1560x1050")
+        self.minsize(960, 680)
 
         self.items: list[SpriteImageItem] = []
         self.active_idx: Optional[int] = None
@@ -340,6 +359,7 @@ class SpritePipelineApp(BaseTk):
             "name": tk.StringVar(value=self.pack_meta.name),
             "set_id": tk.StringVar(value=self.pack_meta.set_id),
             "category": tk.StringVar(value=self.pack_meta.category),
+            "theme": tk.StringVar(value=self.pack_meta.theme),
             "tiles_x": tk.StringVar(value=str(self.pack_meta.tiles_x)),
             "tiles_y": tk.StringVar(value=str(self.pack_meta.tiles_y)),
             "variant_group": tk.StringVar(value=self.pack_meta.variant_group),
@@ -355,6 +375,21 @@ class SpritePipelineApp(BaseTk):
             self.offset_vars[f"offset_{idx}_x"] = tk.StringVar(value="0")
             self.offset_vars[f"offset_{idx}_y"] = tk.StringVar(value="0")
 
+        self.bulk_root_var = tk.StringVar(value="")
+        self.bulk_status_var = tk.StringVar(value="Choose a folder and scan for metadata.json files.")
+        self.bulk_apply_status_var = tk.StringVar(value="")
+        self.bulk_entries: list[dict] = []
+        self.bulk_entry_by_iid: dict[str, dict] = {}
+        self.bulk_field_vars: dict[str, tk.StringVar] = {}
+        self.bulk_apply_vars: dict[str, tk.BooleanVar] = {}
+        self.bulk_mode_var = tk.StringVar(value="single")
+        self.bulk_sort_column = "id"
+        self.bulk_sort_reverse = False
+        self.bulk_tree_column_labels: dict[str, str] = {}
+        self.bulk_single_vars: dict[str, tk.StringVar] = {}
+        self.bulk_single_inputs: dict[str, tk.Widget] = {}
+        self.bulk_single_status_var = tk.StringVar(value="Select one row to edit a single metadata file.")
+
         self._build_ui()
         self._setup_dnd()
         self._refresh_image_list()
@@ -367,15 +402,29 @@ class SpritePipelineApp(BaseTk):
     def _build_ui(self) -> None:
         root = ttk.Frame(self)
         root.pack(fill="both", expand=True, padx=10, pady=10)
-        root.columnconfigure(1, weight=1)
-        root.columnconfigure(2, weight=0)
+        root.columnconfigure(0, weight=1)
         root.rowconfigure(0, weight=1)
 
-        left = ttk.Frame(root)
+        notebook = ttk.Notebook(root)
+        notebook.grid(row=0, column=0, sticky="nsew")
+        sprite_editor_tab = ttk.Frame(notebook)
+        bulk_metadata_tab = ttk.Frame(notebook)
+        notebook.add(sprite_editor_tab, text="Sprite Editor")
+        notebook.add(bulk_metadata_tab, text="Bulk Metadata Editor")
+
+        self._build_sprite_editor_tab(sprite_editor_tab)
+        self._build_bulk_metadata_tab(bulk_metadata_tab)
+
+    def _build_sprite_editor_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(1, weight=1)
+        parent.columnconfigure(2, weight=0)
+        parent.rowconfigure(0, weight=1)
+
+        left = ttk.Frame(parent)
         left.grid(row=0, column=0, sticky="nsw")
-        center = ttk.Frame(root)
+        center = ttk.Frame(parent)
         center.grid(row=0, column=1, sticky="nsew", padx=(10, 10))
-        right = ttk.Frame(root)
+        right = ttk.Frame(parent)
         right.grid(row=0, column=2, sticky="nsew")
         center.columnconfigure(0, weight=1)
         center.rowconfigure(0, weight=1)
@@ -486,6 +535,7 @@ class SpritePipelineApp(BaseTk):
             ("name", "Name"),
             ("set_id", "Set ID"),
             ("category", "Category"),
+            ("theme", "Theme"),
             ("tiles_x", "Tiles X"),
             ("tiles_y", "Tiles Y"),
             ("variant_group", "Variant Group"),
@@ -497,8 +547,9 @@ class SpritePipelineApp(BaseTk):
             ("notes", "Notes"),
         ]:
             ttk.Label(right, text=label).grid(row=row_idx, column=0, sticky="w", pady=2)
-            if key == "category":
-                widget = ttk.Combobox(right, values=CATEGORY_OPTIONS, textvariable=self.meta_vars[key], state="normal")
+            if key in ("category", "theme"):
+                choices = CATEGORY_OPTIONS if key == "category" else THEME_OPTIONS
+                widget = ttk.Combobox(right, values=choices, textvariable=self.meta_vars[key], state="normal")
             else:
                 widget = ttk.Entry(right, textvariable=self.meta_vars[key])
             widget.grid(row=row_idx, column=1, sticky="ew", pady=2)
@@ -535,6 +586,211 @@ class SpritePipelineApp(BaseTk):
 
         ttk.Label(right, textvariable=self.status_var).grid(row=row_idx + 1, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
+    def _build_bulk_metadata_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+
+        controls = ttk.Frame(parent)
+        controls.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
+        controls.columnconfigure(1, weight=1)
+        ttk.Label(controls, text="Root Folder").grid(row=0, column=0, sticky="w")
+        ttk.Entry(controls, textvariable=self.bulk_root_var).grid(row=0, column=1, sticky="ew", padx=(6, 6))
+        ttk.Button(controls, text="Browse", command=self._bulk_choose_root).grid(row=0, column=2, padx=(0, 6))
+        ttk.Button(controls, text="Scan", command=self._bulk_scan_root).grid(row=0, column=3)
+        ttk.Label(controls, textvariable=self.bulk_status_var, foreground="#707070").grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(4, 0)
+        )
+
+        body = ttk.Frame(parent)
+        body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        body.columnconfigure(0, weight=3)
+        body.columnconfigure(1, weight=2)
+        body.rowconfigure(0, weight=1)
+
+        list_frame = ttk.LabelFrame(body, text="Discovered Metadata")
+        list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+
+        self.bulk_tree = ttk.Treeview(
+            list_frame,
+            columns=("id", "name", "category", "theme", "variant_options", "manufacturer", "source", "location"),
+            show="headings",
+            selectmode="extended",
+        )
+        self.bulk_tree_column_labels = {
+            "id": "ID",
+            "name": "Name",
+            "category": "Category",
+            "theme": "Theme",
+            "variant_options": "Variant Options",
+            "manufacturer": "Manufacturer",
+            "source": "Source",
+            "location": "Location",
+        }
+        for col, label in self.bulk_tree_column_labels.items():
+            self.bulk_tree.heading(col, text=label, command=lambda c=col: self._bulk_sort_by_column(c))
+        self.bulk_tree.column("id", width=170, anchor="w", stretch=False)
+        self.bulk_tree.column("name", width=190, anchor="w", stretch=False)
+        self.bulk_tree.column("category", width=130, anchor="w")
+        self.bulk_tree.column("theme", width=130, anchor="w")
+        self.bulk_tree.column("variant_options", width=170, anchor="w")
+        self.bulk_tree.column("manufacturer", width=150, anchor="w")
+        self.bulk_tree.column("source", width=70, anchor="center")
+        self.bulk_tree.column("location", width=380, anchor="w")
+        self.bulk_tree.grid(row=0, column=0, sticky="nsew")
+        self._bulk_update_tree_heading_labels()
+        list_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.bulk_tree.yview)
+        list_scroll.grid(row=0, column=1, sticky="ns")
+        self.bulk_tree.configure(yscrollcommand=list_scroll.set)
+
+        self.bulk_tree.bind("<<TreeviewSelect>>", self._bulk_on_tree_select)
+
+        right_panel = ttk.Frame(body)
+        right_panel.grid(row=0, column=1, sticky="nsew")
+        right_panel.columnconfigure(0, weight=1)
+        right_panel.rowconfigure(0, weight=0)
+        right_panel.rowconfigure(1, weight=0)
+        right_panel.rowconfigure(2, weight=1)
+
+        mode_row = ttk.Frame(right_panel)
+        mode_row.grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(mode_row, text="Edit Mode").pack(side="left", padx=(0, 8))
+        ttk.Radiobutton(
+            mode_row,
+            text="Single",
+            value="single",
+            variable=self.bulk_mode_var,
+            command=self._bulk_update_mode_visibility,
+        ).pack(side="left")
+        ttk.Radiobutton(
+            mode_row,
+            text="Bulk",
+            value="bulk",
+            variable=self.bulk_mode_var,
+            command=self._bulk_update_mode_visibility,
+        ).pack(side="left", padx=(8, 0))
+
+        single_frame = ttk.LabelFrame(right_panel, text="Selected Metadata (Single File)")
+        single_frame.grid(row=1, column=0, sticky="ew")
+        single_frame.columnconfigure(1, weight=1)
+        self.bulk_single_frame = single_frame
+
+        single_fields = [
+            ("id", "ID"),
+            ("name", "Name"),
+            ("set_id", "Set ID"),
+            ("category", "Category"),
+            ("theme", "Theme"),
+            ("tiles_x", "Tiles X"),
+            ("tiles_y", "Tiles Y"),
+            ("variant_group", "Variant Group"),
+            ("variant_label", "Variant Label"),
+            ("group_label", "Group Label"),
+            ("manufacturer", "Manufacturer"),
+            ("link", "Link"),
+            ("instructions", "Instructions"),
+            ("notes", "Notes"),
+        ]
+
+        for row_idx, (key, label) in enumerate(single_fields):
+            self.bulk_single_vars[key] = tk.StringVar(value="")
+            ttk.Label(single_frame, text=label).grid(row=row_idx, column=0, sticky="w", pady=2)
+            if key in ("category", "theme"):
+                choices = CATEGORY_OPTIONS if key == "category" else THEME_OPTIONS
+                widget = ttk.Combobox(single_frame, values=choices, textvariable=self.bulk_single_vars[key], state="normal")
+            else:
+                widget = ttk.Entry(single_frame, textvariable=self.bulk_single_vars[key])
+            widget.grid(row=row_idx, column=1, sticky="ew", pady=2)
+            self.bulk_single_inputs[key] = widget
+
+        single_offsets_frame = ttk.LabelFrame(single_frame, text="Per-Rotation Offsets")
+        single_offsets_frame.grid(row=len(single_fields), column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        for idx in range(4):
+            self.bulk_single_vars[f"offset_{idx}_x"] = tk.StringVar(value="0")
+            self.bulk_single_vars[f"offset_{idx}_y"] = tk.StringVar(value="0")
+            row = ttk.Frame(single_offsets_frame)
+            row.pack(fill="x", pady=1)
+            ttk.Label(row, text=f"Offset {idx}", width=10).pack(side="left")
+            ttk.Label(row, text="X").pack(side="left")
+            ex = ttk.Entry(row, textvariable=self.bulk_single_vars[f"offset_{idx}_x"], width=8)
+            ex.pack(side="left", padx=(2, 8))
+            ttk.Label(row, text="Y").pack(side="left")
+            ey = ttk.Entry(row, textvariable=self.bulk_single_vars[f"offset_{idx}_y"], width=8)
+            ey.pack(side="left", padx=(2, 0))
+            self.bulk_single_inputs[f"offset_{idx}_x"] = ex
+            self.bulk_single_inputs[f"offset_{idx}_y"] = ey
+
+        self.bulk_single_offsets_legend = tk.Canvas(
+            single_frame,
+            width=220,
+            height=120,
+            bg="white",
+            highlightthickness=1,
+            highlightbackground="#bfbfbf",
+        )
+        self.bulk_single_offsets_legend.grid(row=len(single_fields) + 1, column=0, columnspan=2, sticky="w", pady=(6, 2))
+        self._draw_offsets_legend(self.bulk_single_offsets_legend)
+
+        single_actions = ttk.Frame(single_frame)
+        single_actions.grid(row=len(single_fields) + 2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.bulk_single_save_btn = ttk.Button(single_actions, text="Save Selected", command=self._bulk_save_selected_single)
+        self.bulk_single_save_btn.pack(side="left")
+        self.bulk_single_reload_btn = ttk.Button(single_actions, text="Reload Selected", command=self._bulk_reload_selected_single)
+        self.bulk_single_reload_btn.pack(side="left", padx=(6, 0))
+        ttk.Label(single_frame, textvariable=self.bulk_single_status_var, foreground="#707070").grid(
+            row=len(single_fields) + 3, column=0, columnspan=2, sticky="w", pady=(6, 0)
+        )
+
+        edit_frame = ttk.LabelFrame(right_panel, text="Bulk Update Fields")
+        edit_frame.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
+        edit_frame.columnconfigure(2, weight=1)
+        self.bulk_edit_frame = edit_frame
+
+        bulk_fields = [
+            ("id", "ID"),
+            ("name", "Name"),
+            ("set_id", "Set ID"),
+            ("category", "Category"),
+            ("theme", "Theme"),
+            ("tiles_x", "Tiles X"),
+            ("tiles_y", "Tiles Y"),
+            ("variant_group", "Variant Group"),
+            ("variant_label", "Variant Label"),
+            ("group_label", "Group Label"),
+            ("manufacturer", "Manufacturer"),
+            ("link", "Link"),
+            ("instructions", "Instructions"),
+            ("notes", "Notes"),
+        ]
+
+        for row_idx, (key, label) in enumerate(bulk_fields):
+            self.bulk_apply_vars[key] = tk.BooleanVar(value=False)
+            self.bulk_field_vars[key] = tk.StringVar(value="")
+            cb = ttk.Checkbutton(edit_frame, variable=self.bulk_apply_vars[key])
+            cb.grid(row=row_idx, column=0, sticky="w", padx=(0, 4))
+            ttk.Label(edit_frame, text=label).grid(row=row_idx, column=1, sticky="w", pady=2)
+            if key in ("category", "theme"):
+                choices = CATEGORY_OPTIONS if key == "category" else THEME_OPTIONS
+                w = ttk.Combobox(edit_frame, values=choices, textvariable=self.bulk_field_vars[key], state="normal")
+            else:
+                w = ttk.Entry(edit_frame, textvariable=self.bulk_field_vars[key])
+            w.grid(row=row_idx, column=2, sticky="ew", pady=2)
+            if key in ("id", "name"):
+                self.bulk_apply_vars[key].set(False)
+                cb.configure(state="disabled")
+                w.configure(state="disabled")
+
+        action_row = ttk.Frame(edit_frame)
+        action_row.grid(row=len(bulk_fields), column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        ttk.Button(action_row, text="Apply To Selected", command=self._bulk_apply_to_selected).pack(side="left")
+        ttk.Button(action_row, text="Clear Fields", command=self._bulk_clear_fields).pack(side="left", padx=(6, 0))
+        ttk.Label(edit_frame, textvariable=self.bulk_apply_status_var, foreground="#707070").grid(
+            row=len(bulk_fields) + 1, column=0, columnspan=3, sticky="w", pady=(8, 0)
+        )
+        self._bulk_set_single_editor_enabled(False)
+        self._bulk_update_mode_visibility()
+
     def _add_image_field(self, parent, label: str, key: str, row: int, combobox: Optional[list[str]] = None) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
         if combobox is None:
@@ -546,8 +802,649 @@ class SpritePipelineApp(BaseTk):
         if combobox is not None:
             w.bind("<<ComboboxSelected>>", lambda _e: self._apply_image_fields())
 
-    def _draw_offsets_legend(self) -> None:
-        c = self.offsets_legend
+    def _bulk_set_single_editor_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        for widget in self.bulk_single_inputs.values():
+            widget.configure(state=state)
+        self.bulk_single_save_btn.configure(state=state)
+        self.bulk_single_reload_btn.configure(state=state)
+
+    def _bulk_update_mode_visibility(self) -> None:
+        mode = self.bulk_mode_var.get().strip().lower()
+        if mode == "bulk":
+            self.bulk_single_frame.grid_remove()
+            self.bulk_edit_frame.grid()
+        else:
+            self.bulk_edit_frame.grid_remove()
+            self.bulk_single_frame.grid()
+            self._bulk_on_tree_select()
+
+    def _bulk_update_tree_heading_labels(self) -> None:
+        arrow = "▼" if self.bulk_sort_reverse else "▲"
+        for col, label in self.bulk_tree_column_labels.items():
+            text = f"{label} {arrow}" if col == self.bulk_sort_column else label
+            self.bulk_tree.heading(col, text=text, command=lambda c=col: self._bulk_sort_by_column(c))
+
+    def _bulk_sort_by_column(self, column: str) -> None:
+        if not self.bulk_entries:
+            self.bulk_sort_column = column
+            self.bulk_sort_reverse = False
+            self._bulk_update_tree_heading_labels()
+            return
+        if self.bulk_sort_column == column:
+            self.bulk_sort_reverse = not self.bulk_sort_reverse
+        else:
+            self.bulk_sort_column = column
+            self.bulk_sort_reverse = False
+
+        selected_entries: list[dict] = []
+        for iid in self.bulk_tree.selection():
+            entry = self.bulk_entry_by_iid.get(iid)
+            if entry is not None:
+                selected_entries.append(entry)
+
+        self.bulk_entries.sort(
+            key=lambda e: str(e.get(column, "")).strip().lower(),
+            reverse=self.bulk_sort_reverse,
+        )
+        self._refresh_bulk_tree()
+        self._bulk_update_tree_heading_labels()
+
+        reselect_iids: list[str] = []
+        for idx, entry in enumerate(self.bulk_entries):
+            if entry in selected_entries:
+                reselect_iids.append(str(idx))
+        if reselect_iids:
+            self.bulk_tree.selection_set(tuple(reselect_iids))
+            self.bulk_tree.focus(reselect_iids[0])
+            self.bulk_tree.see(reselect_iids[0])
+            self._bulk_on_tree_select()
+
+    def _bulk_clear_single_editor_fields(self) -> None:
+        for var in self.bulk_single_vars.values():
+            var.set("")
+
+    def _bulk_selected_entry(self) -> Optional[dict]:
+        selected = self.bulk_tree.selection()
+        if len(selected) != 1:
+            return None
+        return self.bulk_entry_by_iid.get(selected[0], None)
+
+    def _bulk_on_tree_select(self, _event=None) -> None:
+        selected = self.bulk_tree.selection()
+        if len(selected) == 0:
+            self._bulk_clear_single_editor_fields()
+            self._bulk_set_single_editor_enabled(False)
+            self.bulk_single_status_var.set("Select one row to edit a single metadata file.")
+            return
+        if len(selected) > 1:
+            self._bulk_clear_single_editor_fields()
+            self._bulk_set_single_editor_enabled(False)
+            self.bulk_single_status_var.set("Single-file editor is disabled while multiple rows are selected.")
+            return
+        entry = self.bulk_entry_by_iid.get(selected[0], None)
+        if entry is None:
+            self._bulk_clear_single_editor_fields()
+            self._bulk_set_single_editor_enabled(False)
+            self.bulk_single_status_var.set("Unable to resolve selected row.")
+            return
+        meta = self._bulk_read_entry_metadata(entry)
+        if meta is None:
+            self._bulk_clear_single_editor_fields()
+            self._bulk_set_single_editor_enabled(False)
+            self.bulk_single_status_var.set("Failed to load metadata from selected row.")
+            return
+        for key, var in self.bulk_single_vars.items():
+            if key in ("tiles_x", "tiles_y"):
+                var.set(str(meta.get(key, "")))
+            elif key.startswith("offset_"):
+                m = re.fullmatch(r"offset_(\d+)_(x|y)", key)
+                if m is None:
+                    var.set("0")
+                    continue
+                idx = m.group(1)
+                axis = 0 if m.group(2) == "x" else 1
+                offsets = meta.get("offsets", {})
+                value = 0.0
+                if isinstance(offsets, dict):
+                    pair = offsets.get(idx, [0.0, 0.0])
+                    if isinstance(pair, list) and len(pair) > axis:
+                        value = _safe_float(str(pair[axis]), 0.0)
+                var.set(f"{value:.2f}")
+            else:
+                var.set(str(meta.get(key, "")).strip())
+        self._bulk_set_single_editor_enabled(True)
+        self.bulk_single_status_var.set(f"Editing: {entry.get('location', '')}")
+
+    def _bulk_read_entry_metadata(self, entry: dict) -> Optional[dict]:
+        source = entry.get("source", "")
+        if source == "folder":
+            path = Path(str(entry.get("metadata_path", "")))
+            return self._load_json_file(path)
+        if source == "zip":
+            zip_path = Path(str(entry.get("zip_path", "")))
+            zip_chain = list(entry.get("zip_chain", []))
+            zip_entry_path = str(entry.get("zip_entry_path", ""))
+            return self._read_json_from_zip_path(zip_path, zip_chain, zip_entry_path)
+        return None
+
+    def _read_json_from_zip_path(self, zip_path: Path, zip_chain: list[str], zip_entry_path: str) -> Optional[dict]:
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                payload = self._read_bytes_from_zip_chain(zf, zip_chain, zip_entry_path)
+            return self._parse_json_bytes(payload)
+        except Exception:
+            return None
+
+    def _read_bytes_from_zip_chain(self, zip_file: zipfile.ZipFile, zip_chain: list[str], leaf_path: str) -> bytes:
+        if not zip_chain:
+            return zip_file.read(leaf_path)
+        nested_payload = zip_file.read(zip_chain[0])
+        with zipfile.ZipFile(BytesIO(nested_payload), "r") as nested_zip:
+            return self._read_bytes_from_zip_chain(nested_zip, zip_chain[1:], leaf_path)
+
+    def _bulk_build_single_updates(self, current_meta: dict) -> dict:
+        updates: dict[str, object] = {}
+        for key, var in self.bulk_single_vars.items():
+            if key.startswith("offset_"):
+                continue
+            raw = var.get()
+            if key == "id":
+                normalized = _normalize_id(raw)
+                if normalized:
+                    updates[key] = normalized
+                elif "id" in current_meta:
+                    updates[key] = current_meta["id"]
+            elif key == "name":
+                name = raw.strip()
+                if name != "":
+                    updates[key] = name
+                elif "name" in current_meta:
+                    updates[key] = current_meta["name"]
+            elif key == "category":
+                updates[key] = _normalize_category(raw)
+            elif key in ("tiles_x", "tiles_y"):
+                default_int = int(current_meta.get(key, 2)) if str(current_meta.get(key, "")).strip() != "" else 2
+                updates[key] = max(1, _safe_int(raw, default_int))
+            else:
+                updates[key] = raw.strip()
+        existing_offsets = current_meta.get("offsets", {})
+        if not isinstance(existing_offsets, dict):
+            existing_offsets = {}
+        offsets: dict[str, list[float]] = {}
+        for idx in range(4):
+            default_pair = existing_offsets.get(str(idx), [0.0, 0.0])
+            if not isinstance(default_pair, list) or len(default_pair) < 2:
+                default_pair = [0.0, 0.0]
+            default_x = _safe_float(str(default_pair[0]), 0.0)
+            default_y = _safe_float(str(default_pair[1]), 0.0)
+            raw_x = self.bulk_single_vars[f"offset_{idx}_x"].get()
+            raw_y = self.bulk_single_vars[f"offset_{idx}_y"].get()
+            offsets[str(idx)] = [
+                _safe_float(raw_x, default_x),
+                _safe_float(raw_y, default_y),
+            ]
+        updates["offsets"] = offsets
+        return updates
+
+    def _bulk_reselect_entry(self, entry: dict) -> None:
+        try:
+            idx = self.bulk_entries.index(entry)
+        except ValueError:
+            self._bulk_on_tree_select()
+            return
+        iid = str(idx)
+        self.bulk_tree.selection_set(iid)
+        self.bulk_tree.focus(iid)
+        self.bulk_tree.see(iid)
+        self._bulk_on_tree_select()
+
+    def _bulk_save_selected_single(self) -> None:
+        entry = self._bulk_selected_entry()
+        if entry is None:
+            messagebox.showinfo("Single metadata edit", "Select exactly one row first.")
+            return
+        current_meta = self._bulk_read_entry_metadata(entry)
+        if current_meta is None:
+            messagebox.showerror("Single metadata edit", "Failed to read metadata for selected row.")
+            return
+        new_data = self._apply_updates_to_metadata(current_meta, self._bulk_build_single_updates(current_meta))
+        source = entry.get("source", "")
+        if source == "folder":
+            path = Path(str(entry.get("metadata_path", "")))
+            with path.open("w", encoding="utf-8") as f:
+                json.dump(new_data, f, indent=2, ensure_ascii=True)
+        elif source == "zip":
+            zip_path = Path(str(entry.get("zip_path", "")))
+            zip_chain = list(entry.get("zip_chain", []))
+            zip_entry_path = str(entry.get("zip_entry_path", ""))
+            self._rewrite_zip_metadata_full(zip_path, zip_chain, zip_entry_path, new_data)
+        else:
+            messagebox.showerror("Single metadata edit", f"Unknown source type: {source}")
+            return
+        self._bulk_update_entry_summary(entry, new_data)
+        self._refresh_bulk_tree()
+        self._bulk_reselect_entry(entry)
+        self.bulk_single_status_var.set(f"Saved: {entry.get('location', '')}")
+
+    def _bulk_reload_selected_single(self) -> None:
+        entry = self._bulk_selected_entry()
+        if entry is None:
+            messagebox.showinfo("Single metadata edit", "Select exactly one row first.")
+            return
+        self._bulk_on_tree_select()
+
+    def _bulk_choose_root(self) -> None:
+        selected = filedialog.askdirectory(title="Choose root folder to scan")
+        if not selected:
+            return
+        self.bulk_root_var.set(selected)
+
+    def _bulk_scan_root(self) -> None:
+        root_raw = self.bulk_root_var.get().strip()
+        if not root_raw:
+            root_raw = filedialog.askdirectory(title="Choose root folder to scan")
+            if not root_raw:
+                return
+            self.bulk_root_var.set(root_raw)
+        root_path = Path(root_raw)
+        if not root_path.exists() or not root_path.is_dir():
+            messagebox.showerror("Bulk metadata scan", f"Folder does not exist:\n{root_path}")
+            return
+        entries = self._collect_bulk_metadata_entries(root_path)
+        self.bulk_entries = entries
+        self._refresh_bulk_tree()
+        self.bulk_status_var.set(f"Found {len(entries)} metadata.json file(s).")
+        self.bulk_apply_status_var.set("")
+
+    def _collect_bulk_metadata_entries(self, root_path: Path) -> list[dict]:
+        entries: list[dict] = []
+        for dirpath, _dirnames, filenames in os.walk(root_path):
+            base = Path(dirpath)
+            if "metadata.json" in filenames:
+                metadata_path = base / "metadata.json"
+                data = self._load_json_file(metadata_path)
+                if data is not None:
+                    entries.append(
+                        {
+                            "source": "folder",
+                            "metadata_path": str(metadata_path),
+                            "zip_path": "",
+                            "zip_entry_path": "",
+                            "id": str(data.get("id", "")).strip(),
+                            "name": str(data.get("name", "")).strip(),
+                            "category": str(data.get("category", "")).strip(),
+                            "theme": str(data.get("theme", "")).strip(),
+                            "variant_options": self._extract_variant_options_text(data),
+                            "manufacturer": str(data.get("manufacturer", "")).strip(),
+                            "location": str(metadata_path.parent.relative_to(root_path)),
+                        }
+                    )
+            for filename in filenames:
+                if not filename.lower().endswith(".zip"):
+                    continue
+                zip_path = base / filename
+                entries.extend(self._collect_zip_metadata_entries(zip_path, root_path))
+        entries.sort(key=lambda e: (e["id"].lower(), e["name"].lower(), e["location"].lower()))
+        return entries
+
+    def _collect_zip_metadata_entries(self, zip_path: Path, root_path: Path) -> list[dict]:
+        out: list[dict] = []
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                self._collect_zip_metadata_entries_recursive(
+                    zip_file=zf,
+                    out=out,
+                    zip_path=zip_path,
+                    root_path=root_path,
+                    zip_chain=[],
+                )
+        except Exception:
+            pass
+        return out
+
+    def _collect_zip_metadata_entries_recursive(
+        self,
+        zip_file: zipfile.ZipFile,
+        out: list[dict],
+        zip_path: Path,
+        root_path: Path,
+        zip_chain: list[str],
+    ) -> None:
+        for member in zip_file.namelist():
+            member_norm = member.replace("\\", "/")
+            lower_name = member_norm.lower()
+            if lower_name.endswith("/") or member_norm == "":
+                continue
+            if lower_name == "metadata.json" or lower_name.endswith("/metadata.json"):
+                try:
+                    payload = zip_file.read(member)
+                    parsed = self._parse_json_bytes(payload)
+                    if parsed is None:
+                        continue
+                except Exception:
+                    continue
+                location_parts = [str(zip_path.relative_to(root_path))] + zip_chain + [member_norm]
+                out.append(
+                    {
+                        "source": "zip",
+                        "metadata_path": "",
+                        "zip_path": str(zip_path),
+                        "zip_chain": list(zip_chain),
+                        "zip_entry_path": member_norm,
+                        "id": str(parsed.get("id", "")).strip(),
+                        "name": str(parsed.get("name", "")).strip(),
+                        "category": str(parsed.get("category", "")).strip(),
+                        "theme": str(parsed.get("theme", "")).strip(),
+                        "variant_options": self._extract_variant_options_text(parsed),
+                        "manufacturer": str(parsed.get("manufacturer", "")).strip(),
+                        "location": "::".join(location_parts),
+                    }
+                )
+                continue
+            if not lower_name.endswith(".zip"):
+                continue
+            try:
+                nested_payload = zip_file.read(member)
+                with zipfile.ZipFile(BytesIO(nested_payload), "r") as nested_zip:
+                    self._collect_zip_metadata_entries_recursive(
+                        zip_file=nested_zip,
+                        out=out,
+                        zip_path=zip_path,
+                        root_path=root_path,
+                        zip_chain=zip_chain + [member_norm],
+                    )
+            except Exception:
+                continue
+
+    def _parse_json_bytes(self, payload: bytes) -> Optional[dict]:
+        try:
+            parsed = json.loads(payload.decode("utf-8"))
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return None
+        return None
+
+    def _load_json_file(self, path: Path) -> Optional[dict]:
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                parsed = json.load(f)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return None
+        return None
+
+    def _extract_variant_options_text(self, data: dict) -> str:
+        variant_options = data.get("variant_options", None)
+        if isinstance(variant_options, list):
+            return ", ".join(str(item).strip() for item in variant_options if str(item).strip())
+        if isinstance(variant_options, str):
+            return variant_options.strip()
+        parts = [
+            str(data.get("variant_group", "")).strip(),
+            str(data.get("variant_label", "")).strip(),
+            str(data.get("group_label", "")).strip(),
+        ]
+        parts = [part for part in parts if part]
+        return " / ".join(parts)
+
+    def _bulk_update_entry_summary(self, entry: dict, data: dict) -> None:
+        entry["id"] = str(data.get("id", "")).strip()
+        entry["name"] = str(data.get("name", "")).strip()
+        entry["category"] = str(data.get("category", "")).strip()
+        entry["theme"] = str(data.get("theme", "")).strip()
+        entry["variant_options"] = self._extract_variant_options_text(data)
+        entry["manufacturer"] = str(data.get("manufacturer", "")).strip()
+
+    def _refresh_bulk_tree(self) -> None:
+        for iid in self.bulk_tree.get_children():
+            self.bulk_tree.delete(iid)
+        self.bulk_entry_by_iid.clear()
+        for idx, entry in enumerate(self.bulk_entries):
+            iid = str(idx)
+            self.bulk_entry_by_iid[iid] = entry
+            self.bulk_tree.insert(
+                "",
+                "end",
+                iid=iid,
+                values=(
+                    entry.get("id", ""),
+                    entry.get("name", ""),
+                    entry.get("category", ""),
+                    entry.get("theme", ""),
+                    entry.get("variant_options", ""),
+                    entry.get("manufacturer", ""),
+                    entry.get("source", ""),
+                    entry.get("location", ""),
+                ),
+            )
+        self._bulk_on_tree_select()
+
+    def _bulk_clear_fields(self) -> None:
+        for var in self.bulk_apply_vars.values():
+            var.set(False)
+        for var in self.bulk_field_vars.values():
+            var.set("")
+        self.bulk_apply_status_var.set("")
+
+    def _bulk_build_update_payload(self) -> dict[str, object]:
+        updates: dict[str, object] = {}
+        for key, enabled_var in self.bulk_apply_vars.items():
+            if not enabled_var.get():
+                continue
+            raw = self.bulk_field_vars[key].get()
+            if key == "id":
+                updates[key] = _normalize_id(raw)
+            elif key == "category":
+                updates[key] = _normalize_category(raw)
+            elif key in ("tiles_x", "tiles_y"):
+                updates[key] = max(1, _safe_int(raw, 2))
+            else:
+                updates[key] = raw.strip()
+        return updates
+
+    def _bulk_apply_to_selected(self) -> None:
+        selected = self.bulk_tree.selection()
+        if not selected:
+            messagebox.showinfo("Bulk metadata", "Select one or more rows first.")
+            return
+        updates = self._bulk_build_update_payload()
+        if not updates:
+            messagebox.showinfo("Bulk metadata", "Select at least one field checkbox to apply.")
+            return
+
+        updated_count = 0
+        errors: list[str] = []
+        for iid in selected:
+            entry = self.bulk_entry_by_iid.get(iid)
+            if entry is None:
+                continue
+            try:
+                self._bulk_apply_single_entry(entry, updates)
+                updated_count += 1
+            except Exception as exc:
+                location = entry.get("location", "unknown")
+                errors.append(f"{location}: {exc}")
+
+        self._refresh_bulk_tree()
+        self.bulk_apply_status_var.set(f"Updated {updated_count}/{len(selected)} selected metadata file(s).")
+        if errors:
+            messagebox.showwarning("Bulk metadata warnings", "\n".join(errors[:10]))
+
+    def _bulk_apply_single_entry(self, entry: dict, updates: dict[str, object]) -> None:
+        source = entry.get("source", "")
+        if source == "folder":
+            path = Path(str(entry.get("metadata_path", "")))
+            data = self._load_json_file(path)
+            if data is None:
+                raise ValueError("Unable to read metadata.json")
+            new_data = self._apply_updates_to_metadata(data, updates)
+            with path.open("w", encoding="utf-8") as f:
+                json.dump(new_data, f, indent=2, ensure_ascii=True)
+            self._bulk_update_entry_summary(entry, new_data)
+            return
+        if source == "zip":
+            zip_path = Path(str(entry.get("zip_path", "")))
+            zip_chain = list(entry.get("zip_chain", []))
+            zip_entry_path = str(entry.get("zip_entry_path", ""))
+            new_data = self._rewrite_zip_metadata(zip_path, zip_chain, zip_entry_path, updates)
+            self._bulk_update_entry_summary(entry, new_data)
+            return
+        raise ValueError(f"Unknown source type: {source}")
+
+    def _apply_updates_to_metadata(self, data: dict, updates: dict[str, object]) -> dict:
+        updated = dict(data)
+        for key, value in updates.items():
+            updated[key] = value
+        return updated
+
+    def _rewrite_zip_metadata(
+        self, zip_path: Path, zip_chain: list[str], zip_entry_path: str, updates: dict[str, object]
+    ) -> dict:
+        tmp_fd, tmp_name = tempfile.mkstemp(prefix="sprite-meta-", suffix=".zip", dir=str(zip_path.parent))
+        os.close(tmp_fd)
+        tmp_path = Path(tmp_name)
+        updated_meta: Optional[dict] = None
+        try:
+            with zipfile.ZipFile(zip_path, "r") as src_zip:
+                with zipfile.ZipFile(tmp_path, "w") as dst_zip:
+                    for info in src_zip.infolist():
+                        payload = src_zip.read(info.filename)
+                        current_name = info.filename.replace("\\", "/")
+                        if zip_chain:
+                            if current_name == zip_chain[0]:
+                                payload, updated_meta = self._rewrite_nested_zip_payload(
+                                    payload,
+                                    zip_chain[1:],
+                                    zip_entry_path,
+                                    updates,
+                                )
+                        elif current_name == zip_entry_path:
+                            parsed = self._parse_json_bytes(payload)
+                            if parsed is None:
+                                raise ValueError("metadata.json inside zip is not an object")
+                            updated_meta = self._apply_updates_to_metadata(parsed, updates)
+                            payload = json.dumps(updated_meta, indent=2, ensure_ascii=True).encode("utf-8")
+                        dst_zip.writestr(info, payload)
+            if updated_meta is None:
+                raise ValueError("metadata.json entry not found in zip")
+            os.replace(tmp_path, zip_path)
+            return updated_meta
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+
+    def _rewrite_zip_metadata_full(
+        self, zip_path: Path, zip_chain: list[str], zip_entry_path: str, new_meta: dict
+    ) -> None:
+        tmp_fd, tmp_name = tempfile.mkstemp(prefix="sprite-meta-", suffix=".zip", dir=str(zip_path.parent))
+        os.close(tmp_fd)
+        tmp_path = Path(tmp_name)
+        replaced = False
+        try:
+            with zipfile.ZipFile(zip_path, "r") as src_zip:
+                with zipfile.ZipFile(tmp_path, "w") as dst_zip:
+                    for info in src_zip.infolist():
+                        payload = src_zip.read(info.filename)
+                        current_name = info.filename.replace("\\", "/")
+                        if zip_chain:
+                            if current_name == zip_chain[0]:
+                                payload, nested_replaced = self._rewrite_nested_zip_payload_full(
+                                    payload,
+                                    zip_chain[1:],
+                                    zip_entry_path,
+                                    new_meta,
+                                )
+                                if nested_replaced:
+                                    replaced = True
+                        elif current_name == zip_entry_path:
+                            replaced = True
+                            payload = json.dumps(new_meta, indent=2, ensure_ascii=True).encode("utf-8")
+                        dst_zip.writestr(info, payload)
+            if not replaced:
+                raise ValueError("metadata.json entry not found in zip")
+            os.replace(tmp_path, zip_path)
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+
+    def _rewrite_nested_zip_payload(
+        self,
+        zip_payload: bytes,
+        zip_chain: list[str],
+        zip_entry_path: str,
+        updates: dict[str, object],
+    ) -> tuple[bytes, Optional[dict]]:
+        updated_meta: Optional[dict] = None
+        src_buffer = BytesIO(zip_payload)
+        out_buffer = BytesIO()
+        with zipfile.ZipFile(src_buffer, "r") as src_zip:
+            with zipfile.ZipFile(out_buffer, "w") as dst_zip:
+                for info in src_zip.infolist():
+                    payload = src_zip.read(info.filename)
+                    current_name = info.filename.replace("\\", "/")
+                    if zip_chain:
+                        if current_name == zip_chain[0]:
+                            payload, updated_meta = self._rewrite_nested_zip_payload(
+                                payload,
+                                zip_chain[1:],
+                                zip_entry_path,
+                                updates,
+                            )
+                    elif current_name == zip_entry_path:
+                        parsed = self._parse_json_bytes(payload)
+                        if parsed is None:
+                            raise ValueError("metadata.json inside nested zip is not an object")
+                        updated_meta = self._apply_updates_to_metadata(parsed, updates)
+                        payload = json.dumps(updated_meta, indent=2, ensure_ascii=True).encode("utf-8")
+                    dst_zip.writestr(info, payload)
+        if updated_meta is None:
+            return zip_payload, None
+        return out_buffer.getvalue(), updated_meta
+
+    def _rewrite_nested_zip_payload_full(
+        self,
+        zip_payload: bytes,
+        zip_chain: list[str],
+        zip_entry_path: str,
+        new_meta: dict,
+    ) -> tuple[bytes, bool]:
+        replaced = False
+        src_buffer = BytesIO(zip_payload)
+        out_buffer = BytesIO()
+        with zipfile.ZipFile(src_buffer, "r") as src_zip:
+            with zipfile.ZipFile(out_buffer, "w") as dst_zip:
+                for info in src_zip.infolist():
+                    payload = src_zip.read(info.filename)
+                    current_name = info.filename.replace("\\", "/")
+                    if zip_chain:
+                        if current_name == zip_chain[0]:
+                            payload, nested_replaced = self._rewrite_nested_zip_payload_full(
+                                payload,
+                                zip_chain[1:],
+                                zip_entry_path,
+                                new_meta,
+                            )
+                            if nested_replaced:
+                                replaced = True
+                    elif current_name == zip_entry_path:
+                        replaced = True
+                        payload = json.dumps(new_meta, indent=2, ensure_ascii=True).encode("utf-8")
+                    dst_zip.writestr(info, payload)
+        if not replaced:
+            return zip_payload, False
+        return out_buffer.getvalue(), True
+
+    def _draw_offsets_legend(self, canvas: Optional[tk.Canvas] = None) -> None:
+        c = canvas if canvas is not None else self.offsets_legend
         c.delete("all")
         src_w = 1089.338
         src_h = 516.427
@@ -1035,6 +1932,7 @@ class SpritePipelineApp(BaseTk):
         self.pack_meta.name = self.meta_vars["name"].get().strip() or self.pack_meta.name
         self.pack_meta.set_id = self.meta_vars["set_id"].get().strip()
         self.pack_meta.category = _normalize_category(self.meta_vars["category"].get())
+        self.pack_meta.theme = self.meta_vars["theme"].get().strip()
         self.pack_meta.tiles_x = max(1, _safe_int(self.meta_vars["tiles_x"].get(), self.pack_meta.tiles_x))
         self.pack_meta.tiles_y = max(1, _safe_int(self.meta_vars["tiles_y"].get(), self.pack_meta.tiles_y))
         self.pack_meta.variant_group = self.meta_vars["variant_group"].get().strip()
