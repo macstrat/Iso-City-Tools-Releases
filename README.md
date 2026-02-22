@@ -1,9 +1,9 @@
 # Sprite Pipeline App (Standalone)
 
 This is a separate desktop tool for building model sprite packs from PNG exports.
-It does not modify or run inside the Godot game.
+It does not modify or run inside the main app.
 
-## What this first pass does
+## What this does
 
 - Load one or many source PNG files as a single pack.
 - Calibrate each image independently (guides + fit mode).
@@ -28,7 +28,7 @@ It does not modify or run inside the Godot game.
   - WebP quality + lossless toggle
 - Export metadata only (updates `metadata.json` without re-exporting images).
 
-## Why it matches current runtime
+## Why it matters
 
 The export keeps a bottom-center sprite anchor so it aligns with your existing
 placement system (`Sprite2D.offset = (-width/2, -height)`).
@@ -56,4 +56,5 @@ py tools/sprite_pipeline_app/sprite_pipeline_app.py
   - `2x3` / `3x2` = `1350`
 - If `tkinterdnd2` is installed, OS drag/drop is enabled; otherwise use **Add PNGs**.
 - Default export format is `webp` with quality `95` (lossy). This matches game support and keeps packs smaller.
-- Padding is fixed to `32 px` in this build (matches your workflow).
+- Padding is fixed to `32 px` in this build.
+
