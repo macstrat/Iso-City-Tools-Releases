@@ -1,0 +1,3 @@
+Pillow>=10.0.0
+# Optional, enables native drag/drop onto the app window.
+tkinterdnd2>=0.4.2
