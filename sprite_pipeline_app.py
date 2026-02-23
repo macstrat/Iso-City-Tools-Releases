@@ -343,6 +343,7 @@ class SpritePipelineApp(BaseTk):
         self.webp_quality_var = tk.StringVar(value="95")
         self.webp_lossless_var = tk.BooleanVar(value=False)
         self.zip_name_var = tk.StringVar(value="sprite_pack.zip")
+        self._last_auto_zip_name = self.zip_name_var.get().strip() or "sprite_pack.zip"
 
         self.image_vars: dict[str, tk.StringVar] = {
             "fit_mode": tk.StringVar(value="full_2x2"),
@@ -391,6 +392,7 @@ class SpritePipelineApp(BaseTk):
         self.bulk_single_status_var = tk.StringVar(value="Select one row to edit a single metadata file.")
 
         self._build_ui()
+        self._sync_zip_name_to_id(force=True)
         self._setup_dnd()
         self._refresh_image_list()
         self._preview_thread = threading.Thread(target=self._preview_worker_loop, daemon=True)
@@ -430,7 +432,10 @@ class SpritePipelineApp(BaseTk):
         center.rowconfigure(0, weight=1)
 
         # Left panel: image sequence and export.
-        ttk.Label(left, text="Pack Images (rotation/order)", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        header_row = ttk.Frame(left)
+        header_row.pack(fill="x")
+        ttk.Label(header_row, text="Pack Images (rotation/order)", font=("Segoe UI", 10, "bold")).pack(side="left")
+        ttk.Button(header_row, text="New File / Reset", command=self._reset_sprite_editor).pack(side="right")
         self.listbox = tk.Listbox(left, width=42, height=24)
         self.listbox.pack(fill="both", expand=True, pady=(6, 6))
         self.listbox.bind("<<ListboxSelect>>", self._on_list_select)
@@ -801,6 +806,54 @@ class SpritePipelineApp(BaseTk):
         w.bind("<Return>", lambda _e: self._apply_image_fields())
         if combobox is not None:
             w.bind("<<ComboboxSelected>>", lambda _e: self._apply_image_fields())
+
+    def _sync_zip_name_to_id(self, force: bool = False) -> None:
+        id_value = _normalize_id(self.meta_vars["id"].get() or self.pack_meta.id or "sprite_pack")
+        auto_name = f"{id_value}.zip"
+        current = self.zip_name_var.get().strip()
+        if force or current == "" or current == self._last_auto_zip_name:
+            self.zip_name_var.set(auto_name)
+            self._last_auto_zip_name = auto_name
+            return
+        # If user entered a custom name, keep it.
+        if current.lower() == auto_name.lower():
+            self._last_auto_zip_name = current
+
+    def _reset_sprite_editor(self) -> None:
+        self.items.clear()
+        self.active_idx = None
+        self.pack_meta = PackMetadata()
+        self.preview_zoom = 0.55
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+        self.zoom_var.set(self.preview_zoom * 100.0)
+        self.export_format_var.set("webp")
+        self.webp_quality_var.set("95")
+        self.webp_lossless_var.set(False)
+
+        self.meta_vars["id"].set(self.pack_meta.id)
+        self.meta_vars["name"].set(self.pack_meta.name)
+        self.meta_vars["set_id"].set(self.pack_meta.set_id)
+        self.meta_vars["category"].set(self.pack_meta.category)
+        self.meta_vars["theme"].set(self.pack_meta.theme)
+        self.meta_vars["tiles_x"].set(str(self.pack_meta.tiles_x))
+        self.meta_vars["tiles_y"].set(str(self.pack_meta.tiles_y))
+        self.meta_vars["variant_group"].set(self.pack_meta.variant_group)
+        self.meta_vars["variant_label"].set(self.pack_meta.variant_label)
+        self.meta_vars["group_label"].set(self.pack_meta.group_label)
+        self.meta_vars["manufacturer"].set(self.pack_meta.manufacturer)
+        self.meta_vars["link"].set(self.pack_meta.link)
+        self.meta_vars["instructions"].set(self.pack_meta.instructions)
+        self.meta_vars["notes"].set(self.pack_meta.notes)
+        for idx in range(4):
+            self.offset_vars[f"offset_{idx}_x"].set("0")
+            self.offset_vars[f"offset_{idx}_y"].set("0")
+
+        self._sync_zip_name_to_id(force=True)
+        self._refresh_image_list()
+        self._load_active_item_fields()
+        self.status_var.set("Reset editor for a new model.")
+        self._request_render()
 
     def _bulk_set_single_editor_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
@@ -1844,6 +1897,7 @@ class SpritePipelineApp(BaseTk):
         if name_is_default:
             self.pack_meta.name = guess_name
             self.meta_vars["name"].set(self.pack_meta.name)
+        self._sync_zip_name_to_id()
 
     def _refresh_image_list(self) -> None:
         self.listbox.delete(0, tk.END)
@@ -1950,6 +2004,7 @@ class SpritePipelineApp(BaseTk):
         self.pack_meta.offsets = offsets
         self.meta_vars["id"].set(self.pack_meta.id)
         self.meta_vars["category"].set(self.pack_meta.category)
+        self._sync_zip_name_to_id()
 
     def _move_up(self) -> None:
         item = self._active_item()
