@@ -1,0 +1,52 @@
+Ico Lego Map License
+Version 1.0
+Copyright (c) 2026 Mac
+
+1) Definitions
+- "Project" means the Ico Lego Map software, including bundled files required to run it.
+- "Software" means the source code and executable code of the Project.
+- "Bundled Assets" means included model sprites, metadata, and related runtime content shipped with the Project.
+- "You" means any person or entity using, copying, or distributing the Project.
+
+2) License Grant
+Subject to this License, You are granted a limited, non-exclusive, revocable license to:
+- use the Project;
+- copy and redistribute unmodified copies of the Project for non-commercial purposes;
+- modify the Software for personal or internal use.
+
+3) Commercial Use
+You may not sell, sublicense, or otherwise commercially exploit the Project or Bundled Assets without prior written permission from the copyright holder.
+
+4) Bundled Assets and Third-Party Rights
+- Bundled Assets are provided only as functional content necessary to run the Project.
+- The author does not claim ownership of any third-party trademarks, brands, or external intellectual property referenced in metadata or model naming.
+- Any rights in third-party designs, brands, or source materials remain with their respective owners.
+- If a rights holder requests removal of specific content, that content may be removed or replaced in future distributions.
+
+5) Attribution and Non-Affiliation
+- This Project is an unofficial fan-made tool.
+- The author is not affiliated with, endorsed by, sponsored by, or approved by the LEGO Group or any model designer referenced by the Project.
+- "LEGO" is a trademark of the LEGO Group. All such trademarks are the property of their respective owners.
+- References to designers, manufacturers, set identifiers, or external links are for attribution/identification only.
+
+6) Source Materials and Authorship
+- The author represents that bundled sprites were created by the author from independent modeling/render workflows.
+- Underlying project/source files used to create sprites may be retained by the author as authorship evidence and are not necessarily distributed.
+
+7) Redistribution Conditions
+If You redistribute the Project, You must:
+- include this License in full;
+- preserve all copyright, attribution, and disclaimer notices;
+- not imply endorsement by the LEGO Group or any model designer.
+
+8) No Warranty
+THE PROJECT IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+9) Limitation of Liability
+IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT, OR OTHERWISE, ARISING FROM OR IN CONNECTION WITH THE PROJECT OR THE USE OR OTHER DEALINGS IN THE PROJECT.
+
+10) Termination
+This License terminates automatically if You violate its terms. Upon termination, You must stop use and distribution of the Project and delete copies in Your control.
+
+11) Governing Updates
+The author may update this License for future versions. The version included with a given release governs that release.
