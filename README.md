@@ -1,3 +1,8 @@
+# Youtube Tutorial
+[![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/XBx6i75ykos/0.jpg)](https://www.youtube.com/watch?v=XBx6i75ykos)
+
+
+
 # Sprite Pipeline App (Standalone)
 
 This is a separate desktop tool for building model sprite packs from PNG exports.
@@ -57,4 +62,5 @@ py tools/sprite_pipeline_app/sprite_pipeline_app.py
 - If `tkinterdnd2` is installed, OS drag/drop is enabled; otherwise use **Add PNGs**.
 - Default export format is `webp` with quality `95` (lossy). This matches game support and keeps packs smaller.
 - Padding is fixed to `32 px` in this build.
+
 
