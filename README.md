@@ -53,7 +53,8 @@ The sprite maker supports:
 
 ### Install
 
-py -m pip install -r tools/sprite_pipeline_app/requirements.txt
+py -m pip install -r requirements.txt
+
 
 
 
