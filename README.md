@@ -1,66 +1,59 @@
 # Youtube Tutorial
 [![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/XBx6i75ykos/0.jpg)](https://www.youtube.com/watch?v=XBx6i75ykos)
+# Iso City Tools
 
+Sprite pack creator tools for **MILS / Iso City**.
 
+This repository is for **tools and releases** — not the full game source code.
 
-# Sprite Pipeline App (Standalone)
+## What is in this repo?
 
-This is a separate desktop tool for building model sprite packs from PNG exports.
-It does not modify or run inside the main app.
+There are two different things here:
 
-## What this does
+1. **Sprite Maker (Python script)**
+   - The Python app is used to build sprite packs from PNG exports.
+   - It helps you align/calibrate sprites and export pack metadata.
+   - This is for creators/modders who want to make content.
 
-- Load one or many source PNG files as a single pack.
-- Calibrate each image independently (guides + fit mode).
-- Drag guides directly on preview:
-  - left base guide
-  - center guide
-  - right base guide
-- Click-and-drag panning on preview and live FPS readout.
-- High zoom range for pixel-level guide alignment.
-- Drag-and-drop PNG files (or folders containing PNGs).
-- Set full pack-level metadata:
-  - id, name, set_id, category
-  - tiles_x / tiles_y
-  - variant_group / variant_label / group_label
-  - manufacturer / link / instructions / notes
-  - per-rotation offsets (0-3)
-- Export one pack folder (or zip):
+2. **MILS Software Releases (ready to run)**
+   - The **Releases** section contains the actual MILS application builds.
+   - If you just want to use MILS, download from Releases.
+   - No Python setup is required to run the released app.
+
+---
+
+## Quick Start
+
+### I want to use MILS (normal users)
+- Go to **Releases**
+- Download the latest build for your platform
+- Run it
+
+### I want to create sprite packs (tool users)
+- Install Python dependencies
+- Watch the tutorial above
+- Run the sprite pipeline tool
+- Export packs for MILS
+
+---
+
+## Sprite Pipeline App (Python)
+
+The sprite maker supports:
+
+- Loading one or many PNGs into a pack
+- Per-image calibration and guide placement
+- Drag-and-drop PNG/folder import
+- Metadata editing (`id`, `name`, `set_id`, category, variants, links, notes, etc.)
+- Exporting pack folders (or zip) with:
   - numbered sprites (`1`, `2`, `3`, ...)
   - `thumb`
-  - one shared `metadata.json`
-  - configurable image format: `webp` or `png`
-  - WebP quality + lossless toggle
-- Export metadata only (updates `metadata.json` without re-exporting images).
+  - shared `metadata.json`
+- Metadata-only export mode
 
-## Why it matters
+### Install
 
-The export keeps a bottom-center sprite anchor so it aligns with your existing
-placement system (`Sprite2D.offset = (-width/2, -height)`).
-
-## Install
-
-From the repo root:
-
-```powershell
 py -m pip install -r tools/sprite_pipeline_app/requirements.txt
-```
 
-## Run
-
-```powershell
-py tools/sprite_pipeline_app/sprite_pipeline_app.py
-```
-
-## Notes
-
-- Preset spans include:
-  - `1x1` = `538`
-  - `1x2` / `2x1` = `810`
-  - `full_2x2` = `1080`
-  - `2x3` / `3x2` = `1350`
-- If `tkinterdnd2` is installed, OS drag/drop is enabled; otherwise use **Add PNGs**.
-- Default export format is `webp` with quality `95` (lossy). This matches game support and keeps packs smaller.
-- Padding is fixed to `32 px` in this build.
 
 
