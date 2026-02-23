@@ -2503,32 +2503,7 @@ class SpritePipelineApp(BaseTk):
 
     def _build_pack_metadata_json(self) -> dict:
         self._apply_pack_metadata_fields()
-        data = self.pack_meta.to_dict()
-        data["pipeline"] = {
-            "padding_px": FIXED_PADDING_PX,
-            "export_format": self._image_ext(),
-            "webp_quality": max(1, min(100, _safe_int(self.webp_quality_var.get(), 95))),
-            "webp_lossless": bool(self.webp_lossless_var.get()),
-            "images": [],
-        }
-        for idx, item in enumerate(self.items):
-            data["pipeline"]["images"].append(
-                {
-                    "index": idx,
-                    "file": Path(item.source_path).name,
-                    "fit_mode": item.fit_mode,
-                    "target_span_px": item.effective_target_span(),
-                    "measured_span_px": item.measured_span(),
-                    "scale_factor": item.scale_factor(),
-                    "guide_left": item.guide_left,
-                    "guide_center": item.guide_center,
-                    "guide_right": item.guide_right,
-                    "baseline_y": item.baseline_y,
-                    "offset_x": item.offset_x,
-                    "offset_y": item.offset_y,
-                }
-            )
-        return data
+        return self.pack_meta.to_dict()
 
     def _export_metadata_only(self) -> None:
         out_dir = filedialog.askdirectory(title="Choose folder to write metadata.json")
