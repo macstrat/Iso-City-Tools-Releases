@@ -55,6 +55,15 @@ The sprite maker supports:
 
 py -m pip install -r requirements.txt
 
+## Future Plans
+
+- **8x8 Grid Support**: Add support for an `8x8` base grid for smaller addons like sidewalks and other micro-details, while maintaining compatibility with the current `16x16` workflow.
+- **Elevated Models**: Add multi-height placement support for elevated structures such as train lines, tunnels, bridges, and layered city builds.
+- **Moving Vehicles and Characters**: Introduce animated movement for cars, trains, and minifigs to make cities feel more dynamic and alive.
+- **Top-Down View Mode**: Add a dedicated top-down camera mode to improve planning, alignment, and large-layout editing.
+- **Streetview-Style Mode**: Add an immersive street-level exploration mode inspired by Google Street View for navigating finished city scenes.
+
+
 
 
 
