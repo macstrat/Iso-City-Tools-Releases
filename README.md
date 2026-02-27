@@ -114,7 +114,8 @@ py -m pip install -r requirements.txt
 - **Top-Down View Mode**: Add a dedicated top-down camera mode to improve planning, alignment, and large-layout editing.
 - **Streetview-Style Mode**: Add an immersive street-level exploration mode inspired by Google Street View for navigating finished city scenes.
 - **Integrated Pack Distribution System**: Add a system that new packs can be added in app from a centralized source instead of having to constantly download from the releases page
-- **A Day/Night Mode**: This will add lighting to buildings.
+- **A Day/Night Mode**: This will add lighting to buildings. (this one is surprisingly complicated)
+
 
 
 
