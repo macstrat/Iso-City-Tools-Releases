@@ -143,6 +143,8 @@ _CATEGORY_ALIAS_MAP = {
     "other": "Uncategorized",
 }
 
+_THEME_ALIAS_MAP = {theme.lower(): theme for theme in THEME_OPTIONS}
+
 FIT_MODE_PRESETS = {
     "1x1": 538.0,
     "1x2": 810.0,
@@ -195,6 +197,98 @@ def _normalize_category(value: str) -> str:
         if key == category.lower():
             return category
     return raw
+
+
+def _normalize_theme(value: str) -> str:
+    raw = value.strip()
+    if raw == "":
+        return ""
+    key = raw.lower().replace("-", " ").replace("_", " ")
+    key = re.sub(r"\s+", " ", key).strip()
+    if key in _THEME_ALIAS_MAP:
+        return _THEME_ALIAS_MAP[key]
+    for theme in THEME_OPTIONS:
+        if key == theme.lower():
+            return theme
+    return raw
+
+
+def _split_multi_values(raw: str) -> list[str]:
+    normalized = raw.replace("\n", ",").replace("\r", ",").replace(";", ",")
+    return [part.strip() for part in normalized.split(",") if part.strip()]
+
+
+def _dedupe_preserve_case(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return out
+
+
+def _normalize_category_values(raw: str) -> list[str]:
+    parts = _split_multi_values(raw)
+    normalized = [_normalize_category(part) for part in parts if part.strip()]
+    normalized = _dedupe_preserve_case([part for part in normalized if part.strip()])
+    return normalized or [DEFAULT_CATEGORY]
+
+
+def _normalize_theme_values(raw: str) -> list[str]:
+    parts = _split_multi_values(raw)
+    normalized = [_normalize_theme(part) for part in parts if part.strip()]
+    return _dedupe_preserve_case([part for part in normalized if part.strip()])
+
+
+def _join_multi_values(values: list[str]) -> str:
+    return ", ".join(_dedupe_preserve_case([value.strip() for value in values if value.strip()]))
+
+
+def _metadata_multi_to_text(value: object, *, kind: str) -> str:
+    if isinstance(value, list):
+        parts = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        parts = _split_multi_values(str(value))
+    if kind == "category":
+        return _join_multi_values(_normalize_category_values(", ".join(parts)))
+    if kind == "theme":
+        return _join_multi_values(_normalize_theme_values(", ".join(parts)))
+    return _join_multi_values(parts)
+
+
+def _encode_multi_metadata(raw: str, *, kind: str, default: str = "") -> object:
+    values: list[str]
+    if kind == "category":
+        values = _normalize_category_values(raw)
+    elif kind == "theme":
+        values = _normalize_theme_values(raw)
+    else:
+        values = _split_multi_values(raw)
+    if not values:
+        return default
+    if len(values) == 1:
+        return values[0]
+    return values
+
+
+def _metadata_multi_to_list(value: object, *, kind: str, default_when_empty: bool = False) -> list[str]:
+    if isinstance(value, list):
+        raw_values = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        raw_values = _split_multi_values(str(value))
+    if kind == "category":
+        normalized = [_normalize_category(item) for item in raw_values if item.strip()]
+        normalized = _dedupe_preserve_case([item for item in normalized if item.strip()])
+        if not normalized and default_when_empty:
+            return [DEFAULT_CATEGORY]
+        return normalized
+    if kind == "theme":
+        normalized = [_normalize_theme(item) for item in raw_values if item.strip()]
+        return _dedupe_preserve_case([item for item in normalized if item.strip()])
+    return _dedupe_preserve_case([item for item in raw_values if item.strip()])
 
 
 @dataclass
@@ -279,12 +373,14 @@ class PackMetadata:
     )
 
     def to_dict(self) -> dict:
+        category_values = _normalize_category_values(self.category)
+        theme_values = _normalize_theme_values(self.theme)
         return {
             "id": _normalize_id(self.id),
             "name": self.name.strip() or "New Model",
             "set_id": self.set_id.strip(),
-            "category": _normalize_category(self.category),
-            "theme": self.theme.strip(),
+            "category": category_values[0] if len(category_values) == 1 else category_values,
+            "theme": theme_values[0] if len(theme_values) == 1 else theme_values,
             "tiles_x": max(1, int(self.tiles_x)),
             "tiles_y": max(1, int(self.tiles_y)),
             "variant_group": self.variant_group.strip(),
@@ -337,11 +433,15 @@ class SpritePipelineApp(BaseTk):
         self._pan_render_after_id: Optional[str] = None
         self._last_canvas_mouse: tuple[float, float] = (0.0, 0.0)
         self._suppress_image_apply = False
+        self._multi_value_memory: dict[str, list[str]] = {}
+        self._hover_tooltip: Optional[tk.Toplevel] = None
+        self._hover_tooltip_after_id: Optional[str] = None
 
         self.status_var = tk.StringVar(value="Ready.")
         self.export_format_var = tk.StringVar(value="webp")
         self.webp_quality_var = tk.StringVar(value="95")
         self.webp_lossless_var = tk.BooleanVar(value=False)
+        self.append_metadata_name_var = tk.BooleanVar(value=True)
         self.zip_name_var = tk.StringVar(value="sprite_pack.zip")
         self._last_auto_zip_name = self.zip_name_var.get().strip() or "sprite_pack.zip"
 
@@ -371,6 +471,8 @@ class SpritePipelineApp(BaseTk):
             "instructions": tk.StringVar(value=self.pack_meta.instructions),
             "notes": tk.StringVar(value=self.pack_meta.notes),
         }
+        for key in ("id", "name", "set_id", "manufacturer"):
+            self.meta_vars[key].trace_add("write", self._on_auto_export_name_source_changed)
         self.offset_vars: dict[str, tk.StringVar] = {}
         for idx in range(4):
             self.offset_vars[f"offset_{idx}_x"] = tk.StringVar(value="0")
@@ -383,6 +485,7 @@ class SpritePipelineApp(BaseTk):
         self.bulk_entry_by_iid: dict[str, dict] = {}
         self.bulk_field_vars: dict[str, tk.StringVar] = {}
         self.bulk_apply_vars: dict[str, tk.BooleanVar] = {}
+        self.bulk_multi_mode_vars: dict[str, tk.StringVar] = {}
         self.bulk_mode_var = tk.StringVar(value="single")
         self.bulk_sort_column = "id"
         self.bulk_sort_reverse = False
@@ -462,9 +565,13 @@ class SpritePipelineApp(BaseTk):
         ).grid(row=0, column=1, sticky="w")
         ttk.Label(export, text="WebP Quality").grid(row=1, column=0, sticky="w", pady=2)
         ttk.Entry(export, textvariable=self.webp_quality_var, width=10).grid(row=1, column=1, sticky="w")
-        ttk.Checkbutton(export, text="WebP Lossless", variable=self.webp_lossless_var).grid(
-            row=2, column=0, columnspan=2, sticky="w"
-        )
+        ttk.Checkbutton(export, text="WebP Lossless", variable=self.webp_lossless_var).grid(row=2, column=0, sticky="w")
+        ttk.Checkbutton(
+            export,
+            text="Name from Set ID + Manufacturer + Title",
+            variable=self.append_metadata_name_var,
+            command=self._on_auto_export_name_toggle,
+        ).grid(row=2, column=1, sticky="w")
         ttk.Label(export, text="Zip Name").grid(row=3, column=0, sticky="w", pady=2)
         ttk.Entry(export, textvariable=self.zip_name_var, width=24).grid(row=3, column=1, sticky="ew")
         ttk.Button(left, text="Export Pack Folder", command=self._export_folder).pack(fill="x", pady=(10, 4))
@@ -554,10 +661,20 @@ class SpritePipelineApp(BaseTk):
             ttk.Label(right, text=label).grid(row=row_idx, column=0, sticky="w", pady=2)
             if key in ("category", "theme"):
                 choices = CATEGORY_OPTIONS if key == "category" else THEME_OPTIONS
-                widget = ttk.Combobox(right, values=choices, textvariable=self.meta_vars[key], state="normal")
+                row = ttk.Frame(right)
+                row.grid(row=row_idx, column=1, sticky="ew", pady=2)
+                row.columnconfigure(0, weight=1)
+                widget = ttk.Combobox(row, values=choices, textvariable=self.meta_vars[key], state="normal")
+                widget.grid(row=0, column=0, sticky="ew")
+                ttk.Button(
+                    row,
+                    text="+",
+                    width=3,
+                    command=lambda field=key: self._append_multi_value_var(field, field),
+                ).grid(row=0, column=1, padx=(4, 0))
             else:
                 widget = ttk.Entry(right, textvariable=self.meta_vars[key])
-            widget.grid(row=row_idx, column=1, sticky="ew", pady=2)
+                widget.grid(row=row_idx, column=1, sticky="ew", pady=2)
             widget.bind("<FocusOut>", lambda _e: self._apply_pack_metadata_fields())
             widget.bind("<Return>", lambda _e: self._apply_pack_metadata_fields())
             row_idx += 1
@@ -703,10 +820,20 @@ class SpritePipelineApp(BaseTk):
             ttk.Label(single_frame, text=label).grid(row=row_idx, column=0, sticky="w", pady=2)
             if key in ("category", "theme"):
                 choices = CATEGORY_OPTIONS if key == "category" else THEME_OPTIONS
-                widget = ttk.Combobox(single_frame, values=choices, textvariable=self.bulk_single_vars[key], state="normal")
+                row = ttk.Frame(single_frame)
+                row.grid(row=row_idx, column=1, sticky="ew", pady=2)
+                row.columnconfigure(0, weight=1)
+                widget = ttk.Combobox(row, values=choices, textvariable=self.bulk_single_vars[key], state="normal")
+                widget.grid(row=0, column=0, sticky="ew")
+                ttk.Button(
+                    row,
+                    text="+",
+                    width=3,
+                    command=lambda field=key: self._append_multi_value_bulk_single(field, field),
+                ).grid(row=0, column=1, padx=(4, 0))
             else:
                 widget = ttk.Entry(single_frame, textvariable=self.bulk_single_vars[key])
-            widget.grid(row=row_idx, column=1, sticky="ew", pady=2)
+                widget.grid(row=row_idx, column=1, sticky="ew", pady=2)
             self.bulk_single_inputs[key] = widget
 
         single_offsets_frame = ttk.LabelFrame(single_frame, text="Per-Rotation Offsets")
@@ -776,11 +903,38 @@ class SpritePipelineApp(BaseTk):
             cb.grid(row=row_idx, column=0, sticky="w", padx=(0, 4))
             ttk.Label(edit_frame, text=label).grid(row=row_idx, column=1, sticky="w", pady=2)
             if key in ("category", "theme"):
+                self.bulk_multi_mode_vars[key] = tk.StringVar(value="Append")
                 choices = CATEGORY_OPTIONS if key == "category" else THEME_OPTIONS
-                w = ttk.Combobox(edit_frame, values=choices, textvariable=self.bulk_field_vars[key], state="normal")
+                row = ttk.Frame(edit_frame)
+                row.grid(row=row_idx, column=2, sticky="ew", pady=2)
+                row.columnconfigure(0, weight=1)
+                w = ttk.Combobox(row, values=choices, textvariable=self.bulk_field_vars[key], state="normal")
+                w.grid(row=0, column=0, sticky="ew")
+                ttk.Button(
+                    row,
+                    text="+",
+                    width=3,
+                    command=lambda field=key: self._append_multi_value_bulk(field, field),
+                ).grid(row=0, column=1, padx=(4, 0))
+                ttk.Combobox(
+                    row,
+                    values=("Append", "Replace"),
+                    textvariable=self.bulk_multi_mode_vars[key],
+                    state="readonly",
+                    width=9,
+                ).grid(row=0, column=2, padx=(4, 0))
+                help_label = ttk.Label(row, text="?", foreground="#4a6fa5")
+                help_label.grid(row=0, column=3, padx=(4, 0))
+                help_label.configure(cursor="question_arrow")
+                help_label.bind(
+                    "<Enter>",
+                    lambda e, field=key: self._schedule_bulk_multi_mode_hint(e.widget, field),
+                )
+                help_label.bind("<Leave>", lambda _e: self._hide_hover_tooltip())
+                help_label.bind("<ButtonPress-1>", lambda _e: self._hide_hover_tooltip())
             else:
                 w = ttk.Entry(edit_frame, textvariable=self.bulk_field_vars[key])
-            w.grid(row=row_idx, column=2, sticky="ew", pady=2)
+                w.grid(row=row_idx, column=2, sticky="ew", pady=2)
             if key in ("id", "name"):
                 self.bulk_apply_vars[key].set(False)
                 cb.configure(state="disabled")
@@ -789,12 +943,64 @@ class SpritePipelineApp(BaseTk):
         action_row = ttk.Frame(edit_frame)
         action_row.grid(row=len(bulk_fields), column=0, columnspan=3, sticky="ew", pady=(10, 0))
         ttk.Button(action_row, text="Apply To Selected", command=self._bulk_apply_to_selected).pack(side="left")
+        ttk.Button(
+            action_row,
+            text="ID = Set ID + Manufacturer + Current ID",
+            command=self._bulk_apply_composed_id_to_selected,
+        ).pack(side="left", padx=(6, 0))
         ttk.Button(action_row, text="Clear Fields", command=self._bulk_clear_fields).pack(side="left", padx=(6, 0))
         ttk.Label(edit_frame, textvariable=self.bulk_apply_status_var, foreground="#707070").grid(
             row=len(bulk_fields) + 1, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
         self._bulk_set_single_editor_enabled(False)
         self._bulk_update_mode_visibility()
+
+    def _schedule_bulk_multi_mode_hint(self, widget: tk.Widget, field: str) -> None:
+        self._hide_hover_tooltip()
+        self._hover_tooltip_after_id = self.after(220, lambda: self._show_bulk_multi_mode_hint(widget, field))
+
+    def _show_bulk_multi_mode_hint(self, widget: tk.Widget, field: str) -> None:
+        self._hide_hover_tooltip()
+        field_label = "Category" if field == "category" else "Theme"
+        tooltip_text = (
+            f"{field_label} mode:\n"
+            "- Append: keep each file's current values and add new ones.\n"
+            "- Replace: overwrite existing values."
+        )
+        tooltip = tk.Toplevel(self)
+        tooltip.wm_overrideredirect(True)
+        tooltip.attributes("-topmost", True)
+        label = tk.Label(
+            tooltip,
+            text=tooltip_text,
+            justify="left",
+            bg="#fff8d7",
+            fg="#202020",
+            relief="solid",
+            borderwidth=1,
+            padx=6,
+            pady=4,
+        )
+        label.pack()
+        x = widget.winfo_rootx() + 28
+        y = widget.winfo_rooty() + 28
+        tooltip.wm_geometry(f"+{x}+{y}")
+        self._hover_tooltip = tooltip
+
+    def _hide_hover_tooltip(self) -> None:
+        if self._hover_tooltip_after_id is not None:
+            try:
+                self.after_cancel(self._hover_tooltip_after_id)
+            except Exception:
+                pass
+            self._hover_tooltip_after_id = None
+        if self._hover_tooltip is None:
+            return
+        try:
+            self._hover_tooltip.destroy()
+        except Exception:
+            pass
+        self._hover_tooltip = None
 
     def _add_image_field(self, parent, label: str, key: str, row: int, combobox: Optional[list[str]] = None) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
@@ -808,8 +1014,7 @@ class SpritePipelineApp(BaseTk):
             w.bind("<<ComboboxSelected>>", lambda _e: self._apply_image_fields())
 
     def _sync_zip_name_to_id(self, force: bool = False) -> None:
-        id_value = _normalize_id(self.meta_vars["id"].get() or self.pack_meta.id or "sprite_pack")
-        auto_name = f"{id_value}.zip"
+        auto_name = f"{self._auto_export_base_name()}.zip"
         current = self.zip_name_var.get().strip()
         if force or current == "" or current == self._last_auto_zip_name:
             self.zip_name_var.set(auto_name)
@@ -818,6 +1023,28 @@ class SpritePipelineApp(BaseTk):
         # If user entered a custom name, keep it.
         if current.lower() == auto_name.lower():
             self._last_auto_zip_name = current
+
+    def _normalize_export_name_part(self, value: str) -> str:
+        raw = (value or "").strip()
+        if raw == "":
+            return ""
+        return _normalize_id(raw)
+
+    def _auto_export_base_name(self) -> str:
+        if bool(self.append_metadata_name_var.get()):
+            set_id = self._normalize_export_name_part(self.meta_vars["set_id"].get())
+            manufacturer = self._normalize_export_name_part(self.meta_vars["manufacturer"].get())
+            title = self._normalize_export_name_part(self.meta_vars["name"].get())
+            parts = [part for part in (set_id, manufacturer, title) if part]
+            if parts:
+                return "_".join(parts)
+        return _normalize_id(self.meta_vars["id"].get() or self.pack_meta.id or "sprite_pack")
+
+    def _on_auto_export_name_source_changed(self, *_args) -> None:
+        self._sync_zip_name_to_id()
+
+    def _on_auto_export_name_toggle(self) -> None:
+        self._sync_zip_name_to_id(force=True)
 
     def _reset_sprite_editor(self) -> None:
         self.items.clear()
@@ -830,12 +1057,15 @@ class SpritePipelineApp(BaseTk):
         self.export_format_var.set("webp")
         self.webp_quality_var.set("95")
         self.webp_lossless_var.set(False)
+        self.append_metadata_name_var.set(True)
 
         self.meta_vars["id"].set(self.pack_meta.id)
         self.meta_vars["name"].set(self.pack_meta.name)
         self.meta_vars["set_id"].set(self.pack_meta.set_id)
         self.meta_vars["category"].set(self.pack_meta.category)
         self.meta_vars["theme"].set(self.pack_meta.theme)
+        self._remember_multi_value("meta", "category", "category", self.meta_vars["category"].get())
+        self._remember_multi_value("meta", "theme", "theme", self.meta_vars["theme"].get())
         self.meta_vars["tiles_x"].set(str(self.pack_meta.tiles_x))
         self.meta_vars["tiles_y"].set(str(self.pack_meta.tiles_y))
         self.meta_vars["variant_group"].set(self.pack_meta.variant_group)
@@ -854,6 +1084,54 @@ class SpritePipelineApp(BaseTk):
         self._load_active_item_fields()
         self.status_var.set("Reset editor for a new model.")
         self._request_render()
+
+    def _normalize_multi_for_kind(self, kind: str, raw: str) -> list[str]:
+        if kind == "category":
+            return _normalize_category_values(raw)
+        if kind == "theme":
+            return _normalize_theme_values(raw)
+        return _split_multi_values(raw)
+
+    def _remember_multi_value(self, scope: str, field: str, kind: str, raw: str) -> list[str]:
+        values = self._normalize_multi_for_kind(kind, raw)
+        self._multi_value_memory[f"{scope}:{field}"] = values
+        return values
+
+    def _append_multi_value(self, scope: str, field: str, var: tk.StringVar, kind: str) -> None:
+        key = f"{scope}:{field}"
+        existing = list(self._multi_value_memory.get(key, []))
+        if kind == "category" and existing == [DEFAULT_CATEGORY]:
+            existing = []
+        raw = var.get().strip()
+        if raw == "":
+            return
+        current_values = self._normalize_multi_for_kind(kind, raw)
+        if not current_values:
+            return
+        if ("," in raw) or (";" in raw) or ("\n" in raw) or ("\r" in raw):
+            merged = _dedupe_preserve_case(current_values)
+        else:
+            merged = _dedupe_preserve_case(existing + [current_values[-1]])
+        var.set(_join_multi_values(merged))
+        self._multi_value_memory[key] = merged
+
+    def _append_multi_value_var(self, field: str, kind: str) -> None:
+        if field not in self.meta_vars:
+            return
+        self._append_multi_value("meta", field, self.meta_vars[field], kind)
+        self._apply_pack_metadata_fields()
+
+    def _append_multi_value_bulk_single(self, field: str, kind: str) -> None:
+        if field not in self.bulk_single_vars:
+            return
+        self._append_multi_value("bulk_single", field, self.bulk_single_vars[field], kind)
+
+    def _append_multi_value_bulk(self, field: str, kind: str) -> None:
+        if field not in self.bulk_field_vars:
+            return
+        self._append_multi_value("bulk", field, self.bulk_field_vars[field], kind)
+        if field in self.bulk_apply_vars:
+            self.bulk_apply_vars[field].set(True)
 
     def _bulk_set_single_editor_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
@@ -916,6 +1194,8 @@ class SpritePipelineApp(BaseTk):
     def _bulk_clear_single_editor_fields(self) -> None:
         for var in self.bulk_single_vars.values():
             var.set("")
+        self._multi_value_memory["bulk_single:category"] = []
+        self._multi_value_memory["bulk_single:theme"] = []
 
     def _bulk_selected_entry(self) -> Optional[dict]:
         selected = self.bulk_tree.selection()
@@ -965,7 +1245,11 @@ class SpritePipelineApp(BaseTk):
                         value = _safe_float(str(pair[axis]), 0.0)
                 var.set(f"{value:.2f}")
             else:
-                var.set(str(meta.get(key, "")).strip())
+                if key in ("category", "theme"):
+                    var.set(_metadata_multi_to_text(meta.get(key, ""), kind=key))
+                    self._remember_multi_value("bulk_single", key, key, var.get())
+                else:
+                    var.set(str(meta.get(key, "")).strip())
         self._bulk_set_single_editor_enabled(True)
         self.bulk_single_status_var.set(f"Editing: {entry.get('location', '')}")
 
@@ -1003,11 +1287,11 @@ class SpritePipelineApp(BaseTk):
                 continue
             raw = var.get()
             if key == "id":
-                normalized = _normalize_id(raw)
-                if normalized:
-                    updates[key] = normalized
+                raw_id = raw.strip()
+                if raw_id != "":
+                    updates[key] = _normalize_id(raw_id)
                 elif "id" in current_meta:
-                    updates[key] = current_meta["id"]
+                    updates[key] = str(current_meta["id"]).strip()
             elif key == "name":
                 name = raw.strip()
                 if name != "":
@@ -1015,7 +1299,9 @@ class SpritePipelineApp(BaseTk):
                 elif "name" in current_meta:
                     updates[key] = current_meta["name"]
             elif key == "category":
-                updates[key] = _normalize_category(raw)
+                updates[key] = _encode_multi_metadata(raw, kind="category", default=DEFAULT_CATEGORY)
+            elif key == "theme":
+                updates[key] = _encode_multi_metadata(raw, kind="theme", default="")
             elif key in ("tiles_x", "tiles_y"):
                 default_int = int(current_meta.get(key, 2)) if str(current_meta.get(key, "")).strip() != "" else 2
                 updates[key] = max(1, _safe_int(raw, default_int))
@@ -1057,28 +1343,31 @@ class SpritePipelineApp(BaseTk):
         if entry is None:
             messagebox.showinfo("Single metadata edit", "Select exactly one row first.")
             return
-        current_meta = self._bulk_read_entry_metadata(entry)
-        if current_meta is None:
-            messagebox.showerror("Single metadata edit", "Failed to read metadata for selected row.")
-            return
-        new_data = self._apply_updates_to_metadata(current_meta, self._bulk_build_single_updates(current_meta))
-        source = entry.get("source", "")
-        if source == "folder":
-            path = Path(str(entry.get("metadata_path", "")))
-            with path.open("w", encoding="utf-8") as f:
-                json.dump(new_data, f, indent=2, ensure_ascii=True)
-        elif source == "zip":
-            zip_path = Path(str(entry.get("zip_path", "")))
-            zip_chain = list(entry.get("zip_chain", []))
-            zip_entry_path = str(entry.get("zip_entry_path", ""))
-            self._rewrite_zip_metadata_full(zip_path, zip_chain, zip_entry_path, new_data)
-        else:
-            messagebox.showerror("Single metadata edit", f"Unknown source type: {source}")
-            return
-        self._bulk_update_entry_summary(entry, new_data)
-        self._refresh_bulk_tree()
-        self._bulk_reselect_entry(entry)
-        self.bulk_single_status_var.set(f"Saved: {entry.get('location', '')}")
+        try:
+            current_meta = self._bulk_read_entry_metadata(entry)
+            if current_meta is None:
+                messagebox.showerror("Single metadata edit", "Failed to read metadata for selected row.")
+                return
+            new_data = self._apply_updates_to_metadata(current_meta, self._bulk_build_single_updates(current_meta))
+            source = entry.get("source", "")
+            if source == "folder":
+                path = Path(str(entry.get("metadata_path", "")))
+                with path.open("w", encoding="utf-8") as f:
+                    json.dump(new_data, f, indent=2, ensure_ascii=True)
+            elif source == "zip":
+                zip_path = Path(str(entry.get("zip_path", "")))
+                zip_chain = list(entry.get("zip_chain", []))
+                zip_entry_path = str(entry.get("zip_entry_path", ""))
+                self._rewrite_zip_metadata_full(zip_path, zip_chain, zip_entry_path, new_data)
+            else:
+                messagebox.showerror("Single metadata edit", f"Unknown source type: {source}")
+                return
+            self._bulk_update_entry_summary(entry, new_data)
+            self._refresh_bulk_tree()
+            self._bulk_reselect_entry(entry)
+            self.bulk_single_status_var.set(f"Saved: {entry.get('location', '')}")
+        except Exception as exc:
+            messagebox.showerror("Single metadata edit", f"Failed to save selected metadata:\n{exc}")
 
     def _bulk_reload_selected_single(self) -> None:
         entry = self._bulk_selected_entry()
@@ -1126,8 +1415,8 @@ class SpritePipelineApp(BaseTk):
                             "zip_entry_path": "",
                             "id": str(data.get("id", "")).strip(),
                             "name": str(data.get("name", "")).strip(),
-                            "category": str(data.get("category", "")).strip(),
-                            "theme": str(data.get("theme", "")).strip(),
+                            "category": _metadata_multi_to_text(data.get("category", ""), kind="category"),
+                            "theme": _metadata_multi_to_text(data.get("theme", ""), kind="theme"),
                             "variant_options": self._extract_variant_options_text(data),
                             "manufacturer": str(data.get("manufacturer", "")).strip(),
                             "location": str(metadata_path.parent.relative_to(root_path)),
@@ -1187,8 +1476,8 @@ class SpritePipelineApp(BaseTk):
                         "zip_entry_path": member_norm,
                         "id": str(parsed.get("id", "")).strip(),
                         "name": str(parsed.get("name", "")).strip(),
-                        "category": str(parsed.get("category", "")).strip(),
-                        "theme": str(parsed.get("theme", "")).strip(),
+                        "category": _metadata_multi_to_text(parsed.get("category", ""), kind="category"),
+                        "theme": _metadata_multi_to_text(parsed.get("theme", ""), kind="theme"),
                         "variant_options": self._extract_variant_options_text(parsed),
                         "manufacturer": str(parsed.get("manufacturer", "")).strip(),
                         "location": "::".join(location_parts),
@@ -1246,8 +1535,8 @@ class SpritePipelineApp(BaseTk):
     def _bulk_update_entry_summary(self, entry: dict, data: dict) -> None:
         entry["id"] = str(data.get("id", "")).strip()
         entry["name"] = str(data.get("name", "")).strip()
-        entry["category"] = str(data.get("category", "")).strip()
-        entry["theme"] = str(data.get("theme", "")).strip()
+        entry["category"] = _metadata_multi_to_text(data.get("category", ""), kind="category")
+        entry["theme"] = _metadata_multi_to_text(data.get("theme", ""), kind="theme")
         entry["variant_options"] = self._extract_variant_options_text(data)
         entry["manufacturer"] = str(data.get("manufacturer", "")).strip()
 
@@ -1280,6 +1569,8 @@ class SpritePipelineApp(BaseTk):
             var.set(False)
         for var in self.bulk_field_vars.values():
             var.set("")
+        for var in self.bulk_multi_mode_vars.values():
+            var.set("Append")
         self.bulk_apply_status_var.set("")
 
     def _bulk_build_update_payload(self) -> dict[str, object]:
@@ -1291,7 +1582,39 @@ class SpritePipelineApp(BaseTk):
             if key == "id":
                 updates[key] = _normalize_id(raw)
             elif key == "category":
-                updates[key] = _normalize_category(raw)
+                mode_var = self.bulk_multi_mode_vars.get(key)
+                mode = mode_var.get().strip().lower() if mode_var is not None else "append"
+                if mode == "replace":
+                    updates[key] = {
+                        "kind": "category",
+                        "mode": "replace",
+                        "value": _encode_multi_metadata(raw, kind="category", default=DEFAULT_CATEGORY),
+                    }
+                else:
+                    values = _metadata_multi_to_list(raw, kind="category", default_when_empty=False)
+                    if values:
+                        updates[key] = {
+                            "kind": "category",
+                            "mode": "append",
+                            "values": values,
+                        }
+            elif key == "theme":
+                mode_var = self.bulk_multi_mode_vars.get(key)
+                mode = mode_var.get().strip().lower() if mode_var is not None else "append"
+                if mode == "replace":
+                    updates[key] = {
+                        "kind": "theme",
+                        "mode": "replace",
+                        "value": _encode_multi_metadata(raw, kind="theme", default=""),
+                    }
+                else:
+                    values = _metadata_multi_to_list(raw, kind="theme", default_when_empty=False)
+                    if values:
+                        updates[key] = {
+                            "kind": "theme",
+                            "mode": "append",
+                            "values": values,
+                        }
             elif key in ("tiles_x", "tiles_y"):
                 updates[key] = max(1, _safe_int(raw, 2))
             else:
@@ -1326,6 +1649,52 @@ class SpritePipelineApp(BaseTk):
         if errors:
             messagebox.showwarning("Bulk metadata warnings", "\n".join(errors[:10]))
 
+    def _bulk_compose_id_from_meta(self, meta: dict) -> Optional[str]:
+        set_id = self._normalize_export_name_part(
+            str(
+                meta.get("set_id")
+                or meta.get("set")
+                or meta.get("set_number")
+                or meta.get("lego_set")
+                or ""
+            )
+        )
+        manufacturer = self._normalize_export_name_part(str(meta.get("manufacturer", "")))
+        current_id = self._normalize_export_name_part(str(meta.get("id", "")))
+        if set_id == "" or manufacturer == "" or current_id == "":
+            return None
+        return f"{set_id}_{manufacturer}_{current_id}"
+
+    def _bulk_apply_composed_id_to_selected(self) -> None:
+        selected = self.bulk_tree.selection()
+        if not selected:
+            messagebox.showinfo("Bulk metadata", "Select one or more rows first.")
+            return
+        updated_count = 0
+        errors: list[str] = []
+        for iid in selected:
+            entry = self.bulk_entry_by_iid.get(iid)
+            if entry is None:
+                continue
+            try:
+                meta = self._bulk_read_entry_metadata(entry)
+                if meta is None:
+                    raise ValueError("Unable to read metadata.json")
+                new_id = self._bulk_compose_id_from_meta(meta)
+                if not new_id:
+                    raise ValueError("Missing set_id, manufacturer, or current id")
+                self._bulk_apply_single_entry(entry, {"id": new_id})
+                updated_count += 1
+            except Exception as exc:
+                location = entry.get("location", "unknown")
+                errors.append(f"{location}: {exc}")
+        self._refresh_bulk_tree()
+        self.bulk_apply_status_var.set(
+            f"Updated {updated_count}/{len(selected)} selected metadata file(s) with composed IDs."
+        )
+        if errors:
+            messagebox.showwarning("Bulk metadata warnings", "\n".join(errors[:10]))
+
     def _bulk_apply_single_entry(self, entry: dict, updates: dict[str, object]) -> None:
         source = entry.get("source", "")
         if source == "folder":
@@ -1350,6 +1719,24 @@ class SpritePipelineApp(BaseTk):
     def _apply_updates_to_metadata(self, data: dict, updates: dict[str, object]) -> dict:
         updated = dict(data)
         for key, value in updates.items():
+            if key in ("category", "theme") and isinstance(value, dict):
+                mode = str(value.get("mode", "replace")).strip().lower()
+                kind = str(value.get("kind", key)).strip().lower()
+                if mode == "append":
+                    existing_values = _metadata_multi_to_list(updated.get(key, ""), kind=kind, default_when_empty=False)
+                    incoming_values = _metadata_multi_to_list(value.get("values", []), kind=kind, default_when_empty=False)
+                    merged = _dedupe_preserve_case(existing_values + incoming_values)
+                    if kind == "category":
+                        if not merged:
+                            merged = [DEFAULT_CATEGORY]
+                    else:
+                        if not merged:
+                            updated[key] = ""
+                            continue
+                    updated[key] = merged[0] if len(merged) == 1 else merged
+                    continue
+                updated[key] = value.get("value", updated.get(key, ""))
+                continue
             updated[key] = value
         return updated
 
@@ -1972,6 +2359,12 @@ class SpritePipelineApp(BaseTk):
         item.offset_y = _safe_float(self.image_vars["offset_y"].get(), item.offset_y)
         if item.fit_mode in FIT_MODE_PRESETS and FIT_MODE_PRESETS[item.fit_mode] is not None:
             item.target_span_px = float(FIT_MODE_PRESETS[item.fit_mode])
+        if idx == 0 and len(self.items) > 1:
+            # Keep image 1 as source of truth for fit mode/span so pack footprint
+            # and scale defaults stay consistent across all rotation images.
+            for other in self.items[1:]:
+                other.fit_mode = item.fit_mode
+                other.target_span_px = item.target_span_px
         tiles = self._tiles_from_preset(item.fit_mode)
         if tiles is not None and idx == 0:
             self.pack_meta.tiles_x = tiles[0]
@@ -1985,8 +2378,10 @@ class SpritePipelineApp(BaseTk):
         self.pack_meta.id = _normalize_id(self.meta_vars["id"].get() or self.pack_meta.id)
         self.pack_meta.name = self.meta_vars["name"].get().strip() or self.pack_meta.name
         self.pack_meta.set_id = self.meta_vars["set_id"].get().strip()
-        self.pack_meta.category = _normalize_category(self.meta_vars["category"].get())
-        self.pack_meta.theme = self.meta_vars["theme"].get().strip()
+        category_values = self._remember_multi_value("meta", "category", "category", self.meta_vars["category"].get())
+        theme_values = self._remember_multi_value("meta", "theme", "theme", self.meta_vars["theme"].get())
+        self.pack_meta.category = _join_multi_values(category_values)
+        self.pack_meta.theme = _join_multi_values(theme_values)
         self.pack_meta.tiles_x = max(1, _safe_int(self.meta_vars["tiles_x"].get(), self.pack_meta.tiles_x))
         self.pack_meta.tiles_y = max(1, _safe_int(self.meta_vars["tiles_y"].get(), self.pack_meta.tiles_y))
         self.pack_meta.variant_group = self.meta_vars["variant_group"].get().strip()
@@ -2004,6 +2399,7 @@ class SpritePipelineApp(BaseTk):
         self.pack_meta.offsets = offsets
         self.meta_vars["id"].set(self.pack_meta.id)
         self.meta_vars["category"].set(self.pack_meta.category)
+        self.meta_vars["theme"].set(self.pack_meta.theme)
         self._sync_zip_name_to_id()
 
     def _move_up(self) -> None:
@@ -2372,6 +2768,7 @@ class SpritePipelineApp(BaseTk):
         self.drag_mode = None
 
     def _on_close(self) -> None:
+        self._hide_hover_tooltip()
         if self._zoom_render_after_id is not None:
             try:
                 self.after_cancel(self._zoom_render_after_id)
@@ -2526,7 +2923,7 @@ class SpritePipelineApp(BaseTk):
         if not out_root:
             return
         ext = self._image_ext()
-        model_dir = Path(out_root) / _normalize_id(self.meta_vars["id"].get())
+        model_dir = Path(out_root) / self._auto_export_base_name()
         model_dir.mkdir(parents=True, exist_ok=True)
         exported = 0
         errors: list[str] = []
@@ -2560,7 +2957,7 @@ class SpritePipelineApp(BaseTk):
         if not out_zip:
             return
         ext = self._image_ext()
-        folder = _normalize_id(self.meta_vars["id"].get())
+        folder = self._auto_export_base_name()
         exported = 0
         errors: list[str] = []
         with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
